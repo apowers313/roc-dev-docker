@@ -29,6 +29,9 @@ RUN apt-get install -y nodejs
 USER apowers
 EXPOSE 3000
 
+# Update List of Services
+COPY index.html /var/run/indexserver/index.html
+
 # Run Server
 COPY supervisord.conf /usr/local/etc/supervisord.conf
 CMD ["sudo", "-E", "supervisord", "-c", "/usr/local/etc/supervisord.conf"]
