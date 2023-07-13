@@ -3,7 +3,7 @@ DOCKER=sudo docker
 SSL_DIR=/home/apowers/atoms-cert
 #BUILD_EXTRA=--progress=plain
 IMGNAME=apowers313/roc-dev
-VERSION=1.0.0
+VERSION=1.1.0
 GITPKG=ghcr.io/$(IMGNAME)
 SUPERVISOR_PORT=8001:8001
 INDEX_PORT=80:80
