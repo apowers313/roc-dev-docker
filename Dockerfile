@@ -20,6 +20,7 @@ RUN sudo dpkg -i memgraph_2.8.0-1_amd64.deb
 WORKDIR /home/apowers
 RUN pip install -U networkx numpy scipi
 RUN sudo apt install libssl-dev
+EXPOSE 7687
 
 ## Memgraph Lab (deb package
 ## https://download.memgraph.com/memgraph-lab/v2.7.0/MemgraphLab-2.7.0-amd64.deb
@@ -48,6 +49,23 @@ RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
 RUN apt-get install -y nodejs
 USER apowers
 EXPOSE 3000
+
+# Memgraph test data
+#USER root
+COPY got.cypherl /tmp/got.cypherl
+COPY loaddata.sh /tmp/loaddata.sh
+#RUN runuser -u memgraph /usr/lib/memgraph/memgraph &
+#RUN echo "LOAD CSV FROM /tmp/got.csv WITH HEADER AS game-of-thrones-deaths" | mgconsole
+#RUN cat /tmp/got.csv
+#RUN mgconsole < /tmp/got.cypherl
+#USER apowers
+
+# Install poetry
+USER root
+RUN curl -sSL https://install.python-poetry.org | python3 -
+ENV PATH="/root/.local/bin:${PATH}"
+COPY root_bashrc /root/.bashrc
+USER apowers
 
 # Update List of Services
 COPY index.html /var/run/indexserver/index.html
