@@ -99,5 +99,5 @@ fi
 #fi
 
 # path to poetry
-PATH=/root/.local/bin:$PATH
+PATH=/home/apowers/.local/bin:$PATH
 

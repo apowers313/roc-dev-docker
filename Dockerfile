@@ -1,6 +1,9 @@
 FROM memgraph/memgraph-platform as mg-lab
 FROM ghcr.io/apowers313/dev:1.1.0 as base
-#FROM ghcr.io/apowers313/dev:1.0.0
+
+# Python 3.11
+RUN sudo add-apt-repository -y ppa:deadsnakes/ppa
+RUN sudo apt install -y python3.11 python3.11-dev
 
 # Nethack Learning Environment dependencies
 RUN sudo apt-get install -y build-essential autoconf libtool pkg-config python3-numpy flex bison libbz2-dev
@@ -11,7 +14,6 @@ RUN sudo chmod 644 /etc/apt/trusted.gpg.d/kitware.gpg
 RUN sudo apt-add-repository 'deb https://apt.kitware.com/ubuntu/ jammy main'
 RUN sudo apt-get update
 RUN sudo apt-get --allow-unauthenticated install -y cmake kitware-archive-keyring
-#RUN pip3 install nle
 
 # Memgraph
 WORKDIR /tmp
@@ -22,50 +24,23 @@ RUN pip install -U networkx numpy scipi
 RUN sudo apt install libssl-dev
 EXPOSE 7687
 
-## Memgraph Lab (deb package
-## https://download.memgraph.com/memgraph-lab/v2.7.0/MemgraphLab-2.7.0-amd64.deb
-#WORKDIR /tmp
-#RUN curl -O https://download.memgraph.com/memgraph-lab/v2.7.0/MemgraphLab-2.7.0-amd64.deb; exit 0
-##RUN sudo dpkg -i MemgraphLab-2.7.0-amd64.deb
-##RUN sudo apt-get install -f
-#RUN sudo apt install -y ./MemgraphLab-2.7.0-amd64.deb
-#WORKDIR /home/apowers
-#RUN sudo mkdir /lab
-#RUN sudo chmod 777 /lab
-#RUN sudo chown apowers:apowers /lab
-##USER root
-##RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
-###RUN apt-get install -y nodejs
-##USER apowers
-#RUN sudo apt install -y nodejs
-#EXPOSE 3000
-
 # Memgraph Lab (Docker clone)
 # https://github.com/memgraph/memgraph-platform/blob/main/Dockerfile
 USER root
 COPY --from=mg-lab /lab /lab
-#RUN apt install -y nodejs
 RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
 RUN apt-get install -y nodejs
 USER apowers
 EXPOSE 3000
 
 # Memgraph test data
-#USER root
 COPY got.cypherl /tmp/got.cypherl
 COPY loaddata.sh /tmp/loaddata.sh
-#RUN runuser -u memgraph /usr/lib/memgraph/memgraph &
-#RUN echo "LOAD CSV FROM /tmp/got.csv WITH HEADER AS game-of-thrones-deaths" | mgconsole
-#RUN cat /tmp/got.csv
-#RUN mgconsole < /tmp/got.cypherl
-#USER apowers
 
 # Install poetry
-USER root
 RUN curl -sSL https://install.python-poetry.org | python3 -
-ENV PATH="/root/.local/bin:${PATH}"
+ENV PATH="/home/apowers/.local/bin:${PATH}"
 COPY root_bashrc /root/.bashrc
-USER apowers
 
 # Update List of Services
 COPY index.html /var/run/indexserver/index.html
