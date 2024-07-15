@@ -1,0 +1,37 @@
+# Network config
+networks:
+  macvlan-0:
+    driver: macvlan
+    driver_opts:
+      parent: $NETWORK_INTERFACE
+    ipam:
+      config:
+        - subnet: $NETWORK_SUBNET
+          ip_range: $NETWORK_IP_RANGE
+          gateway: $NETWORK_GATEWAY
+    
+volumes:
+  dev-vol:
+    name: dev-vol
+    driver: local
+    driver_opts:
+      type: none
+      device: /home/apowers/dev
+      o: bind
+
+services:
+  dev-env:
+    container_name: dev-env
+    image: ghcr.io/apowers313/roc-dev:1.3.2
+    mac_address: $MACADDR
+    networks:
+      macvlan-0:
+        ipv4_address: $DEV_IP
+    volumes:
+      - "dev-vol:/home/apowers"
+      - "/home/apowers/atoms-cert:/home/apowers/ssl"
+    environment:
+      - PASSWORD=$DEV_PASSWORD
+      - GITHUB_TOKEN=$GITHUB_TOKEN
+      - TZ=$TZ
+    restart: unless-stopped

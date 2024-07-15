@@ -19,8 +19,11 @@ RUNCMD=run $(DOCKER_PORTS) $(DOCKER_VOLUMES) $(DOCKER_ENV) -it $(IMGNAME):latest
 build:
 	$(DOCKER) build . $(BUILD_EXTRA) -t $(IMGNAME):latest
 
-run:
+test-run:
 	$(DOCKER) $(RUNCMD)
+
+run:
+	$(DOCKER) compose --env-file .env up --detach
 
 shell:
 	$(DOCKER) $(RUNCMD) bash
