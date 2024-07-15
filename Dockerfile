@@ -1,9 +1,13 @@
 FROM memgraph/memgraph-platform as mg-lab
-FROM ghcr.io/apowers313/dev:1.1.0 as base
+FROM ghcr.io/apowers313/dev:1.2.1 as base
 
 # Python 3.11
 RUN sudo add-apt-repository -y ppa:deadsnakes/ppa
 RUN sudo apt install -y python3.11 python3.11-dev
+
+# Python 3.12
+RUN sudo add-apt-repository -y ppa:deadsnakes/ppa
+RUN sudo apt install -y python3.12 python3.12-dev
 
 # Nethack Learning Environment dependencies
 RUN sudo apt-get install -y build-essential autoconf libtool pkg-config python3-numpy flex bison libbz2-dev
@@ -20,7 +24,7 @@ WORKDIR /tmp
 RUN curl -O https://download.memgraph.com/memgraph/v2.8.0/ubuntu-22.04/memgraph_2.8.0-1_amd64.deb
 RUN sudo dpkg -i memgraph_2.8.0-1_amd64.deb
 WORKDIR /home/apowers
-RUN pip install -U networkx numpy scipi
+RUN pip install -U networkx numpy scipy
 RUN sudo apt install libssl-dev
 EXPOSE 7687
 
@@ -41,6 +45,9 @@ COPY loaddata.sh /tmp/loaddata.sh
 RUN curl -sSL https://install.python-poetry.org | python3 -
 ENV PATH="/home/apowers/.local/bin:${PATH}"
 COPY root_bashrc /root/.bashrc
+
+# install graphviz
+sudo apt install graphviz
 
 # Update List of Services
 COPY index.html /var/run/indexserver/index.html
