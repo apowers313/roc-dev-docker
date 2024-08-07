@@ -1,9 +1,9 @@
 .PHONY: build run shell login publish
 DOCKER=sudo docker
 SSL_DIR=/home/apowers/atoms-cert
-#BUILD_EXTRA=--progress=plain
+########BUILD_EXTRA=--progress=plain
 IMGNAME=apowers313/roc-dev
-VERSION=1.3.2
+VERSION=1.5.0
 GITPKG=ghcr.io/$(IMGNAME)
 SUPERVISOR_PORT=8001:8001
 INDEX_PORT=80:80
@@ -11,7 +11,9 @@ JUPYTER_PORT=8002:8002
 VSCODE_PORT=8004:8004
 MEMGRAPH_PORT=7687:7687
 MEMGRAPHLAB_PORT=3000:3000
-DOCKER_PORTS=-p $(SUPERVISOR_PORT) -p $(INDEX_PORT) -p $(VSCODE_PORT) -p $(JUPYTER_PORT) -p $(MEMGRAPH_PORT) -p $(MEMGRAPHLAB_PORT)
+EXPANDRIVE_PORT=28080:28080
+SSHD_PORT=22:22
+DOCKER_PORTS=-p $(SUPERVISOR_PORT) -p $(INDEX_PORT) -p $(VSCODE_PORT) -p $(JUPYTER_PORT) -p $(MEMGRAPH_PORT) -p $(MEMGRAPHLAB_PORT) -p $(EXPANDRIVE_PORT) -p $(SSHD_PORT)
 DOCKER_VOLUMES=-v $(SSL_DIR):/home/apowers/ssl 
 DOCKER_ENV=-e PASSWORD=test
 RUNCMD=run $(DOCKER_PORTS) $(DOCKER_VOLUMES) $(DOCKER_ENV) -it $(IMGNAME):latest
@@ -22,8 +24,11 @@ build:
 test-run:
 	$(DOCKER) $(RUNCMD)
 
-run:
+start:
 	$(DOCKER) compose --env-file .env up --detach
+
+stop:
+	$(DOCKER) compose down
 
 shell:
 	$(DOCKER) $(RUNCMD) bash

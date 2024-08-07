@@ -1,5 +1,5 @@
-FROM memgraph/memgraph-platform as mg-lab
-FROM ghcr.io/apowers313/dev:1.2.1 as base
+FROM memgraph/memgraph-platform AS mg-lab
+FROM ghcr.io/apowers313/dev:1.2.1 AS base
 
 # Python 3.11
 RUN sudo add-apt-repository -y ppa:deadsnakes/ppa
@@ -25,7 +25,7 @@ RUN curl -O https://download.memgraph.com/memgraph/v2.8.0/ubuntu-22.04/memgraph_
 RUN sudo dpkg -i memgraph_2.8.0-1_amd64.deb
 WORKDIR /home/apowers
 RUN pip install -U networkx numpy scipy
-RUN sudo apt install libssl-dev
+RUN sudo apt install -y libssl-dev
 EXPOSE 7687
 
 # Memgraph Lab (Docker clone)
@@ -47,7 +47,36 @@ ENV PATH="/home/apowers/.local/bin:${PATH}"
 COPY root_bashrc /root/.bashrc
 
 # install graphviz
-sudo apt install graphviz
+RUN sudo apt install -y graphviz
+
+# install Nvidia CUDA
+RUN sudo apt install -y wget
+USER root
+RUN wget https://developer.download.nvidia.com/compute/cuda/12.0.0/local_installers/cuda_12.0.0_525.60.13_linux.run && sh cuda_12.0.0_525.60.13_linux.run --silent --toolkit && rm cuda_12.0.0_525.60.13_linux.run
+USER apowers
+ENV CUDA_HOME="/usr/local/cuda"
+ENV LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:${CUDA_HOME}/lib64:${CUDA_HOME}/extras/CUPTI/lib64"
+ENV PATH="${PATH}:${CUDA_HOME}/bin"
+
+# Install ExpanDrive
+COPY exfs_2021.7.2_amd64.deb /tmp/exfs.deb
+RUN sudo apt install /tmp/exfs.deb
+RUN rm -f /tmp/exfs
+
+# Install OpenSSH server
+USER root
+RUN apt install -y openssh-server
+# Configure SSHD.
+# SSH login fix. Otherwise user is kicked off after login
+RUN sed 's@session\s*required\s*pam_loginuid.so@session optional pam_loginuid.so@g' -i /etc/pam.d/sshd
+RUN mkdir /var/run/sshd
+RUN bash -c 'install -m755 <(printf "#!/bin/sh\nexit 0") /usr/sbin/policy-rc.d'
+RUN ex +'%s/^#\zeListenAddress/\1/g' -scwq /etc/ssh/sshd_config
+RUN ex +'%s/^#\zeHostKey .*ssh_host_.*_key/\1/g' -scwq /etc/ssh/sshd_config
+RUN RUNLEVEL=1 dpkg-reconfigure openssh-server
+RUN ssh-keygen -A -v
+RUN update-rc.d ssh defaults
+USER apowers
 
 # Update List of Services
 COPY index.html /var/run/indexserver/index.html
