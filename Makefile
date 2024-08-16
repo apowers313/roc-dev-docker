@@ -1,9 +1,9 @@
-.PHONY: build run shell login publish
+.PHONY: build test-run stop start restart shell login publish
 DOCKER=sudo docker
 SSL_DIR=/home/apowers/atoms-cert
 ########BUILD_EXTRA=--progress=plain
 IMGNAME=apowers313/roc-dev
-VERSION=1.5.0
+VERSION=1.5.1
 GITPKG=ghcr.io/$(IMGNAME)
 SUPERVISOR_PORT=8001:8001
 INDEX_PORT=80:80
@@ -29,6 +29,9 @@ start:
 
 stop:
 	$(DOCKER) compose down
+
+restart: stop start
+
 
 shell:
 	$(DOCKER) $(RUNCMD) bash
