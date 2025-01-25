@@ -1,13 +1,5 @@
 FROM memgraph/memgraph-platform AS mg-lab
-FROM ghcr.io/apowers313/dev:1.3.0 AS base
-
-# Python 3.11
-RUN sudo add-apt-repository -y ppa:deadsnakes/ppa
-RUN sudo apt install -y python3.11 python3.11-dev
-
-# Python 3.12
-RUN sudo add-apt-repository -y ppa:deadsnakes/ppa
-RUN sudo apt install -y python3.12 python3.12-dev
+FROM ghcr.io/apowers313/dev:1.4.2 AS base
 
 # Nethack Learning Environment dependencies
 RUN sudo apt-get install -y build-essential autoconf libtool pkg-config python3-numpy flex bison libbz2-dev
@@ -33,7 +25,6 @@ EXPOSE 7687
 USER root
 COPY --from=mg-lab /lab /lab
 RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
-RUN apt-get install -y nodejs
 USER apowers
 EXPOSE 3000
 
@@ -57,11 +48,6 @@ USER apowers
 ENV CUDA_HOME="/usr/local/cuda"
 ENV LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:${CUDA_HOME}/lib64:${CUDA_HOME}/extras/CUPTI/lib64"
 ENV PATH="${PATH}:${CUDA_HOME}/bin"
-
-# Install ExpanDrive
-COPY exfs_2021.7.2_amd64.deb /tmp/exfs.deb
-RUN sudo apt install /tmp/exfs.deb
-RUN rm -f /tmp/exfs
 
 # Update List of Services
 COPY index.html /var/run/indexserver/index.html

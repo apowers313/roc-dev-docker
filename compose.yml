@@ -22,7 +22,8 @@ volumes:
 services:
   dev-env:
     container_name: dev-env
-    image: ghcr.io/apowers313/roc-dev:1.5.1
+    hostname: dev.ato.ms
+    image: ghcr.io/apowers313/roc-dev:1.6.2
     mac_address: $MACADDR
     networks:
       macvlan-0:
