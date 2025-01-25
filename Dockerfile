@@ -1,5 +1,5 @@
 FROM memgraph/memgraph-platform AS mg-lab
-FROM ghcr.io/apowers313/dev:1.4.2 AS base
+FROM ghcr.io/apowers313/dev:1.4.4 AS base
 
 # Nethack Learning Environment dependencies
 RUN sudo apt-get install -y build-essential autoconf libtool pkg-config python3-numpy flex bison libbz2-dev

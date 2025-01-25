@@ -3,7 +3,7 @@ DOCKER=sudo docker
 SSL_DIR=/home/apowers/atoms-cert
 ########BUILD_EXTRA=--progress=plain
 IMGNAME=apowers313/roc-dev
-VERSION=1.6.2
+VERSION=1.6.4
 GITPKG=ghcr.io/$(IMGNAME)
 SUPERVISOR_PORT=8001:8001
 INDEX_PORT=80:80
@@ -26,7 +26,7 @@ test-run:
 	$(DOCKER) $(RUNCMD)
 
 start:
-	$(DOCKER) compose --env-file .env up --detach
+	$(DOCKER) compose --env-file .env up --detach dev-env
 
 stop:
 	$(DOCKER) compose down

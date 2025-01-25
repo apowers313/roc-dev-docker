@@ -20,10 +20,19 @@ volumes:
       o: bind
 
 services:
+  shell:
+    image: ghcr.io/apowers313/roc-dev:1.6.4
+    stdin_open: true # docker run -i
+    tty: true        # docker run -t
+    command: /bin/bash
+    environment:
+      - PASSWORD=$DEV_PASSWORD
+      - GITHUB_TOKEN=$GITHUB_TOKEN
+      - TZ=$TZ
   dev-env:
     container_name: dev-env
     hostname: dev.ato.ms
-    image: ghcr.io/apowers313/roc-dev:1.6.2
+    image: ghcr.io/apowers313/roc-dev:1.6.4
     mac_address: $MACADDR
     networks:
       macvlan-0:
