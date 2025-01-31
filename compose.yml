@@ -9,6 +9,9 @@ networks:
         - subnet: $NETWORK_SUBNET
           ip_range: $NETWORK_IP_RANGE
           gateway: $NETWORK_GATEWAY
+          aux_addresses: 
+            host: $NETWORK_AUX_ADDR
+        
     
 volumes:
   dev-vol:

@@ -25,11 +25,15 @@ build:
 test-run:
 	$(DOCKER) $(RUNCMD)
 
-start:
+start: setup-network
 	$(DOCKER) compose --env-file .env up --detach dev-env
 
 stop:
 	$(DOCKER) compose down
+
+.PHONY: setup-network
+setup-network:
+	sudo ./setup-network.sh
 
 restart: stop start
 
