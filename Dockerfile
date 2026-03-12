@@ -35,14 +35,20 @@ RUN unset DEBIAN_FRONTEND
 ######################
 
 # Python
-#RUN uv python install 3.10 3.11 3.12 3.13
 RUN sudo add-apt-repository -y ppa:deadsnakes/ppa
 # Python 3.11
 RUN sudo apt install -y python3.11 python3.11-dev
 # Python 3.12
 RUN sudo apt install -y python3.12 python3.12-dev
 # Python 3.13
-RUN sudo apt install -y python3.13 python3.12-dev
+RUN sudo apt install -y python3.13 python3.13-dev
+
+# install pip
+#RUN curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py
+#RUN sudo python3.11 get-pip.py
+#RUN sudo python3.12 get-pip.py
+#RUN sudo python3.13 get-pip.py
+#RUN sudo rm get-pip.py
 RUN sudo apt install -y python3-pip
 
 # install Nvidia CUDA
@@ -72,6 +78,7 @@ COPY --from=mg-lab /lab /lab
 RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
 USER apowers
 EXPOSE 3000
+EXPOSE 7444
 
 # Memgraph test data
 COPY got.cypherl /tmp/got.cypherl
@@ -132,13 +139,6 @@ EXPOSE 80
 USER apowers
 
 ######################
-# EXTRA PORTS
-######################
-
-# for development purposes
-EXPOSE 9000-9099
-
-######################
 # EXTRA TOOLS
 ######################
 
@@ -179,6 +179,13 @@ RUN sudo npm install -g mmdc
 RUN sudo apt-get install -y clang clangd
 
 ######################
+# EXTRA PORTS
+######################
+
+# for development purposes
+EXPOSE 8000-9999
+
+######################
 # SUPERVISORD
 ######################
 
@@ -189,6 +196,24 @@ COPY ./supervisord.base.conf /usr/local/etc/supervisord.base.conf
 COPY supervisord.conf /usr/local/etc/supervisord.conf
 EXPOSE 8001
 
+######################
+# Recent additions
+######################
+RUN sudo apt update
+RUN sudo apt install -y lsof
+RUN sudo npm install -g @anthropic-ai/claude-code
+RUN sudo apt install -y gh
+RUN sudo apt install -y dnsutils
+# set locale
+RUN sudo apt-get install -y locales
+RUN sudo locale-gen en_US.UTF-8
+RUN sudo update-locale
+# for WebGPU
+RUN sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
+# creating logos
+RUN sudo apt install -y imagemagick
+
 # Run Server
 USER apowers
 CMD ["sudo", "-E", "supervisord", "-c", "/usr/local/etc/supervisord.conf"]
+

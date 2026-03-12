@@ -9,10 +9,10 @@ networks:
         - subnet: $NETWORK_SUBNET
           ip_range: $NETWORK_IP_RANGE
           gateway: $NETWORK_GATEWAY
-          aux_addresses: 
+          aux_addresses:
             host: $NETWORK_AUX_ADDR
-        
-    
+
+
 volumes:
   dev-vol:
     name: dev-vol
@@ -47,6 +47,8 @@ services:
     networks:
       macvlan-0:
         ipv4_address: $DEV_IP
+    runtime: nvidia
+    privileged: true
     deploy:
       resources:
         reservations:
@@ -61,4 +63,7 @@ services:
       - PASSWORD=$DEV_PASSWORD
       - GITHUB_TOKEN=$GITHUB_TOKEN
       - TZ=$TZ
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+    init: true
     restart: unless-stopped

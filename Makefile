@@ -1,4 +1,4 @@
-.PHONY: build test-run stop start restart shell login publish
+.PHONY: build fresh test-run stop start restart shell login publish
 DOCKER=sudo docker
 SSL_DIR=/home/apowers/atoms-cert
 ########BUILD_EXTRA=--progress=plain
@@ -19,13 +19,16 @@ DOCKER_VOLUMES=-v $(SSL_DIR):/home/apowers/ssl
 RUNCMD=run $(DOCKER_PORTS) $(DOCKER_VOLUMES) $(DOCKER_ENV) -it $(IMGNAME):latest
 
 build:
-	$(DOCKER) build . $(BUILD_EXTRA) -t $(IMGNAME):latest
+	$(DOCKER) build . $(BUILD_EXTRA) -t $(IMGNAME):latest -t $(IMGNAME):$(VERSION)
+
+fresh: BUILD_EXTRA += "--no-cache"
+fresh: build
 
 test-run:
 	$(DOCKER) $(RUNCMD)
 
 start: setup-network
-	$(DOCKER) compose --env-file .env up --detach dev-env
+	$(DOCKER) compose --env-file .env up --detach dev-env --build
 
 stop:
 	$(DOCKER) compose down
@@ -39,6 +42,9 @@ restart: stop start
 
 shell:
 	$(DOCKER) $(RUNCMD) bash
+
+logs:
+	$(DOCKER) compose logs
 
 # login requires a Personal Access Token (PAT): https://github.com/settings/tokens
 login:
