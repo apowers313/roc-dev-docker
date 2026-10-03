@@ -1,0 +1,19 @@
+# Rollback override: run the previous Ubuntu 22.04 image.
+#
+#   docker compose -f compose.yml -f compose.jammy.yml --env-file .env \
+#       up -d --no-build dev-env
+#
+# or:  ./migrate-to-noble.sh rollback --yes
+#
+# Caveat: git-lfs and tilix were installed by hand in the old container and
+# lived only in its writable layer, which is gone. They are in ./Dockerfile
+# (24.04) but NOT in Dockerfile.jammy, so a rolled-back container lacks them
+# until you add them there or reinstall by hand.
+services:
+  dev-env:
+    image: apowers313/roc-dev:2.0.0
+    build:
+      context: .
+      dockerfile: Dockerfile.jammy
+      tags:
+        - "apowers313/roc-dev:2.0.0"

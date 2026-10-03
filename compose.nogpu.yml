@@ -1,0 +1,15 @@
+# Emergency override: run dev-env WITHOUT a GPU.
+# For when the host nvidia driver is mismatched and nvidia-container-cli
+# refuses to start any GPU container, which would otherwise leave no dev
+# environment at all. No CUDA; everything else works.
+services:
+  dev-env:
+    runtime: runc
+    deploy:
+      resources:
+        reservations:
+          devices: !reset []
+    environment:
+      - PASSWORD=$DEV_PASSWORD
+      - GITHUB_TOKEN=$GITHUB_TOKEN
+      - TZ=$TZ

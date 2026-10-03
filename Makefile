@@ -1,12 +1,14 @@
-.PHONY: build fresh test-run stop start restart shell login publish build-noble fresh-noble shell-noble check-noble
+.PHONY: build fresh test-run stop start restart shell login publish check build-jammy fresh-jammy rollback verify nogpu
 DOCKER=sudo docker
 SSL_DIR=/home/apowers/atoms-cert
 ########BUILD_EXTRA=--progress=plain
 IMGNAME=apowers313/roc-dev
-VERSION=2.0.0
-# Side-by-side Ubuntu 24.04 build (Dockerfile.noble)
-NOBLE_VERSION=3.0.0-noble
+# Ubuntu 24.04 (noble) is the default: ./Dockerfile
+VERSION=3.0.0
+# Previous Ubuntu 22.04 build, kept for rollback: ./Dockerfile.jammy
+JAMMY_VERSION=2.0.0
 DEV_HOME=/home/apowers/dev
+COMPOSE_JAMMY=-f compose.yml -f compose.jammy.yml
 GITPKG=ghcr.io/$(IMGNAME)
 SUPERVISOR_PORT=8001:8001
 INDEX_PORT=80:80
@@ -19,7 +21,7 @@ EXPANDRIVE_PORT=28080:28080
 SSHD_PORT=22:22
 DOCKER_PORTS=-p $(SUPERVISOR_PORT) -p $(INDEX_PORT) -p $(VSCODE_PORT) -p $(JUPYTER_PORT) -p $(MARIMO_PORT) -p $(MEMGRAPH_PORT) -p $(MEMGRAPHLAB_PORT) -p $(EXPANDRIVE_PORT) -p $(SSHD_PORT)
 DOCKER_VOLUMES=-v $(SSL_DIR):/home/apowers/ssl 
-RUNCMD=run $(DOCKER_PORTS) $(DOCKER_VOLUMES) $(DOCKER_ENV) -it $(IMGNAME):latest
+RUNCMD=run $(DOCKER_PORTS) $(DOCKER_VOLUMES) $(DOCKER_ENV) -it $(IMGNAME):$(VERSION)
 
 build:
 	$(DOCKER) build . $(BUILD_EXTRA) -t $(IMGNAME):latest -t $(IMGNAME):$(VERSION)
@@ -27,24 +29,41 @@ build:
 fresh: BUILD_EXTRA += "--no-cache"
 fresh: build
 
+# Smoke test the current image against the real ~/dev. Runs no services and
+# no macvlan, so it is safe alongside a running dev-env.
+# --privileged is required: /etc/nvidia-container-runtime/config.toml sets
+# no-cgroups = true, so without it the GPU check fails on a healthy driver.
+check:
+	$(DOCKER) run --rm -it --gpus all --privileged $(DOCKER_VOLUMES) \
+		-v $(DEV_HOME):/home/apowers $(IMGNAME):$(VERSION) check-env
+
 ########################################
-# Ubuntu 24.04 (noble) — side by side
+# Ubuntu 22.04 rollback (Dockerfile.jammy)
 ########################################
 
-build-noble:
-	$(DOCKER) build . -f Dockerfile.noble $(BUILD_EXTRA) -t $(IMGNAME):$(NOBLE_VERSION)
+build-jammy:
+	$(DOCKER) build . -f Dockerfile.jammy $(BUILD_EXTRA) -t $(IMGNAME):$(JAMMY_VERSION)
 
-fresh-noble: BUILD_EXTRA += --no-cache
-fresh-noble: build-noble
+fresh-jammy: BUILD_EXTRA += --no-cache
+fresh-jammy: build-jammy
 
-# Interactive shell on the noble image with the REAL ~/dev mounted.
-# No supervisord, no macvlan — safe to run alongside the running dev-env.
-shell-noble:
-	$(DOCKER) run --rm -it --gpus all $(DOCKER_VOLUMES) -v $(DEV_HOME):/home/apowers $(IMGNAME):$(NOBLE_VERSION) bash
+# Swap the running dev-env back to the 22.04 image.
+rollback: setup-network
+	$(DOCKER) compose $(COMPOSE_JAMMY) --env-file .env up -d --no-build dev-env
 
-# Same, but runs the smoke test and exits non-zero on failure.
-check-noble:
-	$(DOCKER) run --rm -it --gpus all $(DOCKER_VOLUMES) -v $(DEV_HOME):/home/apowers $(IMGNAME):$(NOBLE_VERSION) check-env
+########################################
+# Diagnostics
+########################################
+
+# supervisord process states, in-container smoke test, and a port sweep
+# against $DEV_IP. Read-only.
+verify:
+	./migrate-to-noble.sh verify
+
+# Start dev-env with the GPU reservation stripped out, for when the host
+# nvidia driver is mismatched and no GPU container can start.
+nogpu:
+	./migrate-to-noble.sh nogpu
 
 test-run:
 	$(DOCKER) $(RUNCMD)

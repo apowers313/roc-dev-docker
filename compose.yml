@@ -35,14 +35,17 @@ services:
   dev-env:
     container_name: dev-env
     hostname: dev.ato.ms
+    # Ubuntu 24.04 (noble) is the default. ./Dockerfile is the 24.04 build;
+    # ./Dockerfile.jammy is the previous 22.04 one, kept for rollback via
+    # compose.jammy.yml.
     image: apowers313/roc-dev:latest
     build:
       context: .
       tags:
         - "apowers313/roc-dev:latest"
         - "ghcr.io/apowers313/roc-dev:latest"
-        - "ghcr.io/apowers313/roc-dev:2.0.0"
-        - "apowers313/roc-dev:2.0.0"
+        - "ghcr.io/apowers313/roc-dev:3.0.0"
+        - "apowers313/roc-dev:3.0.0"
     mac_address: $MACADDR
     networks:
       macvlan-0:
@@ -59,6 +62,10 @@ services:
     volumes:
       - "dev-vol:/home/apowers"
       - "/home/apowers/atoms-cert:/home/apowers/ssl"
+      # Service logs on the host, so they survive container RECREATION (not
+      # just restart). Visible inside the container as ~/logs/supervisord too,
+      # since /home/apowers is the same host tree.
+      - "/home/apowers/dev/logs/supervisord:/var/log/supervisord"
     environment:
       - PASSWORD=$DEV_PASSWORD
       - GITHUB_TOKEN=$GITHUB_TOKEN
@@ -67,3 +74,34 @@ services:
       - NVIDIA_DRIVER_CAPABILITIES=all
     init: true
     restart: unless-stopped
+
+    # Resource limits sized to "almost the whole machine" - this container IS
+    # the purpose of this server. Host has 93.9 GiB; the other 16 containers
+    # use ~5.6 GiB combined (sonarqube is the bulk of it), so 84g leaves ~10
+    # GiB for them plus the host.
+    #
+    # The point of a limit here is NOT to constrain the dev work - it is that
+    # an unlimited container gets its processes killed by the HOST (earlyoom or
+    # the kernel) with no record of which container was responsible. With a
+    # limit, memory pressure is attributed: .State.OOMKilled flips to true and
+    # the cgroup's memory.events oom_kill counter increments, both of which the
+    # watchdog captures.
+    #
+    # memswap_limit = memory + the 8 GiB of host swap, so swap is available as
+    # overflow rather than going straight to OOM.
+    mem_limit: 84g
+    memswap_limit: 92g
+    # Concurrency has never been near this (observed peak ~101 tasks); the
+    # ceiling exists only to stop a genuine fork bomb taking the host down.
+    # systemd also caps the scope at TasksMax (~114964 = 15% of threads-max),
+    # so raise DefaultTasksMax if this ever needs to go higher.
+    pids_limit: 100000
+
+    # Keep enough stdout history to cover an incident, without unbounded growth.
+    # NOTE: these logs are still lost if the container is RECREATED (compose
+    # down/up) - only dev-env-watchdog.sh copies them somewhere durable.
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"

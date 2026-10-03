@@ -16,7 +16,7 @@
 #
 # Usage:
 #   ./fix-nvidia-driver.sh reload    # ~2 min, only dev-env stops, no reboot
-#   ./fix-nvidia-driver.sh reboot    # stops ALL containers; picks up kernel 191
+#   ./fix-nvidia-driver.sh reboot --yes   # stops ALL containers; picks up kernel 191
 #   ./fix-nvidia-driver.sh verify    # read-only: check whether GPU works now
 set -euo pipefail
 
@@ -27,7 +27,9 @@ verify() {
     cat /proc/driver/nvidia/version
     ls /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.*[0-9]
     echo "== GPU inside the noble image =="
-    docker run --rm --gpus all apowers313/roc-dev:3.0.0-noble bash -c '
+    # --privileged: config.toml sets no-cgroups = true, so device access needs
+    # it (compose.yml sets privileged: true for the same reason).
+    docker run --rm --gpus all --privileged apowers313/roc-dev:3.0.0 bash -c '
         nvidia-smi | head -12
         nvcc --version | tail -2 | head -1
         python3.10 -c "import torch; print(\"torch\", torch.__version__, \"cuda:\", torch.cuda.is_available())" 2>/dev/null \
@@ -50,8 +52,13 @@ case "${1:-}" in
     ;;
   reboot)
     echo ">> This stops EVERY container: observability stack, sonarqube, dev-env."
-    read -rp "   Type REBOOT to continue: " ans
-    [ "$ans" = "REBOOT" ] || { echo "aborted"; exit 1; }
+    if [ "${2:-}" = "--yes" ]; then
+        echo ">> (--yes given, rebooting now)"
+    else
+        read -rp "   Type REBOOT to continue: " ans 2>/dev/null \
+            || { echo "   no interactive input - re-run as: $0 reboot --yes"; exit 1; }
+        [ "$ans" = "REBOOT" ] || { echo "aborted"; exit 1; }
+    fi
     sudo systemctl reboot
     ;;
   verify)
