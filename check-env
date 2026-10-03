@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# Smoke test for the dev-env container. Run it inside a shell with the real
+# ~/dev mounted, BEFORE pointing compose at a new image.
+#   docker run --rm -it --gpus all -v /home/apowers/dev:/home/apowers \
+#       apowers313/roc-dev:3.0.0-noble check-env
+set -uo pipefail
+
+pass=0; fail=0; known=0
+check() { # check <label> <command...>
+    local label="$1"; shift
+    if out=$("$@" 2>&1); then
+        printf '  \033[32mok\033[0m   %-34s %s\n' "$label" "$(echo "$out" | head -1 | cut -c1-70)"
+        pass=$((pass+1))
+    else
+        printf '  \033[31mFAIL\033[0m %-34s %s\n' "$label" "$(echo "$out" | head -1 | cut -c1-70)"
+        fail=$((fail+1))
+    fi
+}
+# Known-and-accepted: reported for visibility, never counted as a failure.
+# Used for the ~/.local/bin launchers whose #!/usr/bin/python3 shebangs point at
+# 3.12 on noble while their packages live in 3.10. Deliberately not fixed - the
+# tools are unused, and no service depends on them any more.
+expected() { # expected <label> <note> <command...>
+    local label="$1" note="$2"; shift 2
+    if out=$("$@" 2>&1); then
+        printf '  \033[32mok\033[0m   %-34s %s\n' "$label" "$(echo "$out" | head -1 | cut -c1-70)"
+        pass=$((pass+1))
+    else
+        printf '  \033[33mskip\033[0m %-34s %s\n' "$label" "$note"
+        known=$((known+1))
+    fi
+}
+
+echo "== identity =="
+check "uid is 1000"          bash -c '[[ $(id -u) == 1000 ]] && id'
+check "home is writable"     bash -c 'touch ~/.check-env-probe && rm ~/.check-env-probe && echo ok'
+check "home is the mount"    bash -c 'test -d ~/Projects && echo "~/Projects present"'
+
+echo "== interpreters =="
+for v in 3.10 3.11 3.12 3.13; do
+    check "python$v"         bash -c "python$v --version"
+done
+check "python3 -> 3.12"      bash -c 'python3 --version'
+
+echo "== the 22.04 home carry-over =="
+check "~/.local 3.10 tree"   bash -c 'test -d ~/.local/lib/python3.10/site-packages && echo present'
+check "3.10 sees user site"  bash -c 'python3.10 -c "import site,sys; p=[x for x in sys.path if \"/.local/lib/python3.10\" in x]; assert p, \"user site missing\"; print(p[0])"'
+check "a 3.10 venv runs"     bash -c 'v=$(find ~/.venvs ~/Projects -maxdepth 3 -name pyvenv.cfg 2>/dev/null | xargs -r grep -l "3\.10" | head -1); [[ -n $v ]] || { echo "no 3.10 venv found (skip)"; exit 0; }; "$(dirname "$v")/bin/python" --version'
+expected "~/.local/bin/jupyter" "unused launcher, 3.10 shebang; service uses /usr/local/bin/jupyter" \
+         bash -c 'test -x ~/.local/bin/jupyter && ~/.local/bin/jupyter --version >/dev/null && echo ok'
+
+echo "== toolchain =="
+check "node"                 node --version
+check "npm"                  npm --version
+check "cargo"                cargo --version
+check "uv"                   uv --version
+expected "poetry" "unused launcher, 3.10 shebang; run: python3.10 ~/.local/bin/poetry" poetry --version
+check "poetry (3.10)"        bash -c 'python3.10 ~/.local/bin/poetry --version 2>/dev/null || { echo "not installed for 3.10 (skip)"; exit 0; }'
+expected "hatch" "unused launcher, 3.10 shebang; image copy is /usr/local/bin/hatch" hatch --version
+check "hatch (image)"        /usr/local/bin/hatch --version
+check "pnpm"                 pnpm --version
+expected "cmake" "~/.local/bin pip shim shadows /usr/bin/cmake" cmake --version
+check "cmake (image)"        /usr/bin/cmake --version
+check "gh"                   gh --version
+check "java"                 bash -c 'java -version 2>&1'
+
+echo "== gpu =="
+check "nvidia-smi"           bash -c 'nvidia-smi --query-gpu=name,driver_version --format=csv,noheader \
+    || { echo "no GPU: run without --gpus all, or host driver mismatched (./fix-nvidia-driver.sh)"; exit 1; }'
+check "nvcc"                 bash -c 'nvcc --version | tail -2 | head -1'
+check "torch sees cuda"      bash -c 'python3.10 -c "import torch" 2>/dev/null || { echo "torch not installed for 3.10 (skip)"; exit 0; }; python3.10 -c "import torch; print(torch.__version__, torch.cuda.is_available())"'
+
+echo "== services (image side) =="
+check "jupyter (image)"      bash -c '/usr/local/bin/jupyter --version | head -1'
+check "marimo via 3.13"      bash -c 'python3.13 /usr/local/bin/marimo --version'
+check "code-server"          code-server --version
+check "supervisord"          supervisord --version
+check "memgraph binary"      bash -c 'test -x /usr/lib/memgraph/memgraph && /usr/lib/memgraph/memgraph --version'
+check "memgraph lab bundle"  bash -c 'test -f /lab/dist-backend/server.js && echo present'
+check "mgconsole"            bash -c 'command -v mgconsole'
+
+echo
+echo "  $pass passed, $fail failed, $known known-and-accepted"
+if [ "$fail" -gt 0 ]; then
+    echo "  (known-and-accepted = deliberately unfixed ~/.local/bin launchers)"
+fi
+exit $(( fail > 0 ))

@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Repoint `#!/usr/bin/python3` shebangs in ~/.local/bin at python3.10.
+#
+# Why: the bind-mounted home was populated on Ubuntu 22.04, where
+# /usr/bin/python3 was 3.10, and ~/.local/lib/python3.10 holds ~11 GB of
+# `pip install --user` packages. On 24.04 /usr/bin/python3 is 3.12, so those
+# launchers (jupyter, jupyter-lab, poetry, ...) import nothing.
+#
+# Dry run by default; pass --apply to rewrite. Originals are kept as *.pre310.
+set -euo pipefail
+
+BIN_DIR="${HOME}/.local/bin"
+TARGET="${PY310:-/usr/bin/python3.10}"
+APPLY=0
+[[ "${1:-}" == "--apply" ]] && APPLY=1
+
+[[ -d "$BIN_DIR" ]] || { echo "no $BIN_DIR — nothing to do"; exit 0; }
+[[ -x "$TARGET" ]] || { echo "error: $TARGET not found; is python3.10 installed?" >&2; exit 1; }
+
+found=0
+while IFS= read -r -d '' f; do
+    head -c2 "$f" 2>/dev/null | grep -q '#!' || continue
+    line=$(head -1 "$f")
+    [[ "$line" == "#!/usr/bin/python3" || "$line" == "#!/usr/bin/env python3" ]] || continue
+    found=$((found + 1))
+    if (( APPLY )); then
+        cp -p "$f" "${f}.pre310"
+        sed -i "1s|.*|#!${TARGET}|" "$f"
+        echo "fixed   $f"
+    else
+        echo "would fix   $f   ($line -> #!${TARGET})"
+    fi
+done < <(find "$BIN_DIR" -maxdepth 1 -type f -print0)
+
+echo
+if (( found == 0 )); then
+    echo "nothing to change."
+elif (( APPLY )); then
+    echo "$found script(s) repointed at ${TARGET}. Backups: *.pre310"
+    echo "Undo with: for b in ${BIN_DIR}/*.pre310; do mv \"\$b\" \"\${b%.pre310}\"; done"
+else
+    echo "$found script(s) would change. Re-run with --apply to write."
+fi

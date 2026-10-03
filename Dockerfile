@@ -213,6 +213,17 @@ RUN sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
 # creating logos
 RUN sudo apt install -y imagemagick
 
+# Java (for sonar-scanner)
+RUN sudo apt install -y openjdk-17-jre-headless
+# SonarQube scanner
+RUN curl -sL https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-7.0.2.4839-linux-x64.zip -o /tmp/sonar-scanner.zip \
+    && sudo unzip /tmp/sonar-scanner.zip -d /opt \
+    && sudo mv /opt/sonar-scanner-7.0.2.4839-linux-x64 /opt/sonar-scanner \
+    && rm /tmp/sonar-scanner.zip
+ENV PATH="${PATH}:/opt/sonar-scanner/bin"
+# Use system Java instead of bundled JRE
+ENV SONAR_SCANNER_OPTS="-Dsonar.scanner.javaExePath=/usr/bin/java"
+
 # Run Server
 USER apowers
 CMD ["sudo", "-E", "supervisord", "-c", "/usr/local/etc/supervisord.conf"]

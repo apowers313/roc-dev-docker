@@ -1,0 +1,9 @@
+# Keep the build context small and keep secrets out of it entirely.
+.git
+.gitignore
+.env
+*.md
+.claude
+setup-network.sh
+compose.yml
+Makefile

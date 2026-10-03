@@ -1,9 +1,12 @@
-.PHONY: build fresh test-run stop start restart shell login publish
+.PHONY: build fresh test-run stop start restart shell login publish build-noble fresh-noble shell-noble check-noble
 DOCKER=sudo docker
 SSL_DIR=/home/apowers/atoms-cert
 ########BUILD_EXTRA=--progress=plain
 IMGNAME=apowers313/roc-dev
 VERSION=2.0.0
+# Side-by-side Ubuntu 24.04 build (Dockerfile.noble)
+NOBLE_VERSION=3.0.0-noble
+DEV_HOME=/home/apowers/dev
 GITPKG=ghcr.io/$(IMGNAME)
 SUPERVISOR_PORT=8001:8001
 INDEX_PORT=80:80
@@ -23,6 +26,25 @@ build:
 
 fresh: BUILD_EXTRA += "--no-cache"
 fresh: build
+
+########################################
+# Ubuntu 24.04 (noble) — side by side
+########################################
+
+build-noble:
+	$(DOCKER) build . -f Dockerfile.noble $(BUILD_EXTRA) -t $(IMGNAME):$(NOBLE_VERSION)
+
+fresh-noble: BUILD_EXTRA += --no-cache
+fresh-noble: build-noble
+
+# Interactive shell on the noble image with the REAL ~/dev mounted.
+# No supervisord, no macvlan — safe to run alongside the running dev-env.
+shell-noble:
+	$(DOCKER) run --rm -it --gpus all $(DOCKER_VOLUMES) -v $(DEV_HOME):/home/apowers $(IMGNAME):$(NOBLE_VERSION) bash
+
+# Same, but runs the smoke test and exits non-zero on failure.
+check-noble:
+	$(DOCKER) run --rm -it --gpus all $(DOCKER_VOLUMES) -v $(DEV_HOME):/home/apowers $(IMGNAME):$(NOBLE_VERSION) check-env
 
 test-run:
 	$(DOCKER) $(RUNCMD)
