@@ -1,0 +1,579 @@
+# syntax=docker/dockerfile:1.7
+#
+# roc-dev on Ubuntu 26.04 LTS "Resolute Raccoon" (resolute).
+#
+# Build side by side with the 24.04 default:
+#   make build-resolute     # -> apowers313/roc-dev:4.0.0-resolute
+#   make check-resolute     # smoke test against the real ~/dev
+#
+# Differences from ./Dockerfile (24.04) are marked "RESOLUTE:" where the change
+# was forced by 26.04, and "BP:" where it is a best-practice cleanup.
+#
+# THREE FACTS A FUTURE MAINTAINER WILL OTHERWISE RE-DERIVE THE HARD WAY:
+#  1. There is NO CUDA 12.x for ubuntu2604, at any version. The repo offers only
+#     cuda-toolkit-13-3 and 13-4. CUDA 12.8 cannot be back-fitted either: glibc
+#     2.43 now declares cospi/sinpi/rsqrt and collides with CUDA 12.8's
+#     crt/math_functions.h (6 hard errors on a trivial .cu), and that is NOT
+#     fixable with -ccbin or -allow-unsupported-compiler. 12.9 fails identically.
+#  2. There is NO memgraph ubuntu-26.04 deb, at any version (2.22.1 -> 3.8.0 all
+#     404 while ubuntu-24.04 all 200). The debian-13 deb is used instead - it
+#     depends on libpython3.13, which deadsnakes already provides here.
+#  3. `sudo` on resolute Recommends sudo-rs, which WINS update-alternatives and
+#     silently ignores -E. Since CMD is `sudo -E supervisord`, the container
+#     never boots until the alternative is pinned back to GNU sudo. See below.
+
+######################
+# BUILD ARGUMENTS
+######################
+# BP: every third-party version is pinned here instead of floating, so a
+# rebuild is reproducible and an upgrade is a one-line diff.
+ARG UBUNTU_VERSION=26.04
+# RESOLUTE: no ubuntu-26.04 deb exists at any version; the debian-13 deb is
+# used instead (see fact 2). 3.12.0 is a MAJOR jump from 24.04's 2.22.1 -
+# got.cypherl loads correctly on it (2680 nodes / 11967 relationships verified)
+# but no roc-specific Cypher was exercised.
+ARG MEMGRAPH_VERSION=3.12.0
+# RESOLUTE: cuda-toolkit-12-8 does not exist for ubuntu2604 (see fact 1).
+# 13-4 over 13-3 deliberately: 13.3's host_config.h gate is `__GNUC__ > 15` and
+# resolute ships gcc 15.2 with zero headroom (g++-16 is already in the archive);
+# 13.4's gate is `__GNUC__ > 16`.
+# Keep this a SINGLE package name - the install line below is hard-quoted.
+ARG CUDA_APT_PACKAGE=cuda-toolkit-13-4
+# RESOLUTE: cuda-compat is OPT-IN and OFF by default. It fixes *runtime* PTX JIT
+# for nvrtc consumers (cupy, numba, jitify) on this driver, but it cannot be
+# scoped: once installed, the container runtime puts its libcuda (615.71.09)
+# ahead of the host's in the ldconfig cache for EVERY process, including torch.
+# That couples the image to host driver <= 615.71.09 and costs ~470 MB. torch is
+# verified working WITHOUT it (it binds only libcuda.so from the host and maps
+# its own bundled CUDA 12.8 runtime), and nvcc-compiled code is fixed by the
+# -arch=sm_89 flags below. Turn it on only if you hit CUDA error 222 from an
+# nvrtc/JIT path:  --build-arg CUDA_COMPAT_PACKAGE=cuda-compat-13-4
+ARG CUDA_COMPAT_PACKAGE=
+ARG NODE_MAJOR=22
+ARG PNPM_VERSION=10.0.0
+ARG SONAR_SCANNER_VERSION=7.0.2.4839
+# RESOLUTE: Kitware's cmake 4.x hard-errors on the Nethack Learning Environment
+# (both 4.4.3 from Kitware and 4.2.3 from the resolute archive). 3.31.12 is
+# published for resolute and gets NLE through configure.
+ARG CMAKE_VERSION=3.31.12-0kitware1ubuntu26.04.2
+ARG DEV_USER=apowers
+# RESOLUTE: must match the host uid that owns /home/apowers/dev (1000).
+ARG DEV_UID=1000
+# The GPU in this host is an RTX 4070 SUPER (sm_89). See the CUDA section.
+ARG GPU_ARCH_SM=89
+ARG GPU_ARCH_DOT=8.9
+
+######################
+# MEMGRAPH LAB STAGE
+######################
+# RESOLUTE: memgraph-platform is deprecated and its newest build pairs with the
+# 2.x server line, not the 3.x we now run. The standalone lab image replaces it.
+# Its layout differs: the bundle is at /home/lab (not /lab) and the entrypoint
+# is dist-backend/index.js (not server.js) - supervisord.conf handles both.
+FROM memgraph/lab:3.13.2 AS mg-lab
+
+######################
+# MAIN IMAGE
+######################
+FROM ubuntu:${UBUNTU_VERSION}
+
+LABEL org.opencontainers.image.title="roc-dev" \
+      org.opencontainers.image.description="Ubuntu 26.04 dev environment: CUDA, Memgraph, code-server, JupyterLab, Marimo" \
+      org.opencontainers.image.source="https://github.com/apowers313/roc-dev-docker"
+
+# BP: ARG, not ENV - keeps DEBIAN_FRONTEND out of the final image, where it
+# would silently break interactive apt for anyone shelled in.
+ARG DEBIAN_FRONTEND=noninteractive
+ARG DEV_USER
+ARG DEV_UID
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# BP: keep apt's downloads in a BuildKit cache mount. Rebuilds - including
+# `make fresh` (--no-cache) - reuse the .debs instead of re-downloading GBs.
+RUN rm -f /etc/apt/apt.conf.d/docker-clean \
+ && echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/keep-cache \
+ && echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80-retries \
+ && printf '#!/bin/sh\nexit 0\n' > /usr/sbin/policy-rc.d \
+ && chmod 0755 /usr/sbin/policy-rc.d
+
+######################
+# SETUP UBUNTU
+######################
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked <<'EOF'
+set -euxo pipefail
+apt-get update
+# Make REAL Ubuntu
+apt-get install -y ubuntu-server
+# unminimize lives in its own package at /usr/bin/unminimize (since 24.04).
+apt-get install -y unminimize
+# NOTE: subshell with pipefail off. unminimize exits before `yes` does, so the
+# pipeline returns 141 (SIGPIPE) under `set -o pipefail` even on success.
+( set +o pipefail; yes | /usr/bin/unminimize )
+# Basic tools. man-db by name: `man` is a virtual package with several providers.
+apt-get install -y \
+    ca-certificates curl wget git gnupg software-properties-common \
+    net-tools sudo man-db locales
+# RESOLUTE: THIS LINE IS LOAD-BEARING - without it the container never boots.
+# `sudo` Recommends sudo-rs 0.2.13, which registers /usr/lib/cargo/bin/sudo at
+# update-alternatives priority 50 against GNU sudo's /usr/bin/sudo.ws at 40, so
+# sudo-rs wins in auto mode. sudo-rs IGNORES -E: it prints "preserving the
+# entire environment is not supported", exits 0, and PASSWORD never reaches
+# supervisord - which then aborts rc=2 on %(ENV_PASSWORD)s in
+# supervisord.base.conf before spawning a single program.
+#   - It must come AFTER this install, not after `ubuntu-server`: ubuntu-server
+#     pulls no sudo at all, so update-alternatives would exit 2 and fail the
+#     `set -e` block.
+#   - Do NOT `apt-get purge sudo-rs` instead: it is a hard Depends of
+#     ubuntu-minimal, which `unminimize` installs above, so purging takes
+#     ubuntu-minimal with it.
+#   - `--set` is manual mode, which survives a later `--reinstall sudo`.
+# Equivalent alternative: install sudo with --no-install-recommends.
+update-alternatives --set sudo /usr/bin/sudo.ws
+sudo --version | head -1
+locale-gen en_US.UTF-8
+update-locale LANG=en_US.UTF-8
+EOF
+
+ENV LANG=en_US.UTF-8 \
+    LC_ALL=en_US.UTF-8
+
+# Setup user
+RUN <<'EOF'
+set -euxo pipefail
+# The base image ships a default `ubuntu` account already holding uid 1000.
+# Left in place, ${DEV_USER} lands on 1001 and every file in the bind-mounted
+# /home/${DEV_USER} (owned by host uid 1000) becomes foreign.
+userdel -r ubuntu 2>/dev/null || true
+useradd -m -s /bin/bash -u "${DEV_UID}" -U "${DEV_USER}"
+echo "${DEV_USER} ALL=(ALL:ALL) NOPASSWD:ALL" > /etc/sudoers.d/${DEV_USER}
+chmod 0440 /etc/sudoers.d/${DEV_USER}
+# BP: /home/${DEV_USER} is masked by the dev-vol bind mount at runtime, so a
+# per-user .gitconfig written here would never be seen. Write it system-wide.
+git config --system user.email "apowers@ato.ms"
+git config --system user.name "Adam Powers"
+EOF
+
+WORKDIR /home/${DEV_USER}
+
+######################
+# PYTHON
+######################
+# RESOLUTE: the system python3 is 3.14.4 - FOUR minor versions past the 3.10 the
+# bind-mounted home is built around. That home carries ~11 GB of
+# `pip install --user` packages under ~/.local/lib/python3.10 plus ~26 venvs, so
+# python3.10 below is load-bearing: drop it and the whole 11 GB is stranded.
+# (Verified: deadsnakes ships python3.10 3.10.22 for resolute; the micro bump
+# from jammy's 3.10.12 keeps the cp310 ABI tag and the site-packages path, and
+# numpy 1.26.4 / yaml / jupyter_core all import from the real mounted home.)
+#
+# deadsnakes publishes 3.7-3.13 and 3.15 for resolute; 3.14 comes from the
+# Ubuntu archive. NOTE python3.13 is ABSENT from the resolute archive, so the
+# PPA is now a single point of failure for BOTH 3.10 (the home) and 3.13
+# (marimo, which supervisord invokes as `python3.13 /usr/local/bin/marimo`).
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked <<'EOF'
+set -euxo pipefail
+add-apt-repository -y ppa:deadsnakes/ppa
+apt-get update
+apt-get install -y \
+    python3.10 python3.10-dev python3.10-venv python3.10-distutils \
+    python3.11 python3.11-dev python3.11-venv python3.11-distutils \
+    python3.12 python3.12-dev python3.12-venv \
+    python3.13 python3.13-dev python3.13-venv \
+    python3.14 python3.14-dev python3.14-venv \
+    python3-pip
+# RESOLUTE: python3.14-venv is NOT pulled in transitively, and without it
+# `python3 -m venv` and ensurepip are broken for the system interpreter. Assert
+# it here so a future change cannot silently regress it.
+python3 -m venv /tmp/_vcheck
+/tmp/_vcheck/bin/pip --version
+rm -rf /tmp/_vcheck
+EOF
+
+# NOTE: deliberately no `ensurepip` for the extra interpreters. Every
+# Debian-patched python puts /usr/lib/python3/dist-packages on sys.path, so
+# `python3.10 -m ensurepip --upgrade` reaches into the SYSTEM 3.14's packages
+# and replaces its setuptools. On resolute this is WORSE than on noble: distutils
+# resolves to the SHARED /usr/lib/python3/dist-packages/setuptools/_distutils
+# shim for ALL of 3.10-3.14, so tripping ensurepip removes distutils from
+# 3.12/3.13/3.14 at once and every interpreter then prints a dist-packages
+# warning on startup. uv installs into a named interpreter without that
+# collision, so uv is the install path for every non-system interpreter here.
+# For ad-hoc installs use: uv pip install --system --python python3.10 <pkg>
+ENV UV_TOOL_DIR=/opt/uv/tools \
+    UV_TOOL_BIN_DIR=/usr/local/bin
+RUN curl -LsSf --retry 8 --retry-delay 5 --retry-all-errors https://astral.sh/uv/install.sh \
+  | env UV_INSTALL_DIR=/usr/local/bin INSTALLER_NO_MODIFY_PATH=1 sh
+
+######################
+# INSTALL CUDA
+######################
+# RESOLUTE: ubuntu2404 -> ubuntu2604, and 12-8 -> 13-4 (see fact 1 at the top).
+ARG CUDA_APT_PACKAGE
+ARG CUDA_COMPAT_PACKAGE
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked <<'EOF'
+set -euxo pipefail
+cd /tmp
+repo=https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2604/x86_64
+curl -fsSLO --retry 8 --retry-delay 5 --retry-all-errors "${repo}/cuda-keyring_1.1-1_all.deb"
+dpkg -i cuda-keyring_1.1-1_all.deb
+rm -f cuda-keyring_1.1-1_all.deb
+curl -fsSL --retry 8 --retry-delay 5 --retry-all-errors "${repo}/cuda-ubuntu2604.pin" -o /etc/apt/preferences.d/cuda-repository-pin-600
+apt-get update
+apt-get install -y "${CUDA_APT_PACKAGE}"
+# Separate line on purpose: the line above is hard-quoted, so a two-package ARG
+# value fails with "Unable to locate package cuda-toolkit-13-4 cuda-compat-13-4".
+if [ -n "${CUDA_COMPAT_PACKAGE}" ]; then
+    apt-get install -y "${CUDA_COMPAT_PACKAGE}"
+fi
+# Absolute path: /usr/local/cuda/bin is not on PATH until the ENV PATH near
+# the end of this file, so a bare `nvcc` here exits 127 and fails the block.
+/usr/local/cuda/bin/nvcc --version | tail -2 | head -1
+EOF
+
+ENV CUDA_HOME="/usr/local/cuda"
+# RESOLUTE: CUDA 13 dropped the extras/CUPTI/lib64 path that 12.x shipped.
+ENV LD_LIBRARY_PATH="/usr/local/cuda/lib64"
+
+# RESOLUTE: THESE FLAGS PREVENT SILENTLY WRONG GPU RESULTS.
+# Driver 580.178.04 JITs PTX up to .version 9.0 and rejects 9.1-9.5. nvcc 13.4
+# emits 9.4, and its DEFAULT arch is sm_75 while this GPU is sm_89 - so the
+# sm_75 cubin is unusable, the driver must JIT the sm_75 PTX, and refuses.
+# The failure mode is the dangerous kind: `nvcc foo.cu && ./a.out` compiles
+# clean, then returns CUDA error 222 at kernel LAUNCH, and both
+# cudaDeviceSynchronize and cudaMemcpy report "no error" while the buffer stays
+# ZERO-FILLED. Only cudaGetLastError surfaces it.
+# -arch=sm_89 forces a real cubin, which is the fix. Note a virtual arch is NOT
+# a fix: -arch=compute_89 also returns 222 because it emits PTX-only.
+ARG GPU_ARCH_SM
+ARG GPU_ARCH_DOT
+ENV NVCC_APPEND_FLAGS="-arch=sm_${GPU_ARCH_SM}" \
+    CUDAARCHS="${GPU_ARCH_SM}" \
+    TORCH_CUDA_ARCH_LIST="${GPU_ARCH_DOT}"
+# Dockerfile ENV does not reach ssh logins, and sshd on :22 is a primary entry
+# point into this container - so the same values go into /etc/environment.
+RUN <<'EOF'
+set -euxo pipefail
+printf 'CUDAARCHS=%s\nNVCC_APPEND_FLAGS=-arch=sm_%s\nTORCH_CUDA_ARCH_LIST=%s\n' \
+    "${GPU_ARCH_SM}" "${GPU_ARCH_SM}" "${GPU_ARCH_DOT}" >> /etc/environment
+EOF
+# CAVEAT: NVCC_APPEND_FLAGS silently overrides a project's deliberate
+# -arch=sm_80 (nvcc warns "incompatible redefinition"). Use NVCC_PREPEND_FLAGS
+# instead if project flags must win. Also note nvcc 13 HARD-ERRORS on sm_52/60/
+# 61/70 where 12.8 only warned, so any project pinning a pre-Turing arch needs
+# updating. And no env var fixes runtime PTX JIT for nvrtc consumers - that
+# needs CUDA_COMPAT_PACKAGE (see the ARG comment above).
+
+######################
+# INSTALL MEMGRAPH
+######################
+ARG MEMGRAPH_VERSION
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked <<'EOF'
+set -euxo pipefail
+cd /tmp
+apt-get update
+# RESOLUTE: debian-13, not ubuntu-24.04. The ubuntu-24.04 deb Depends on
+# libpython3.12t64, which has no candidate on resolute. The debian-13 deb
+# Depends on libpython3.13 (>= 3.13.0~rc3), libssl3t64 and libc6 (>= 2.39) -
+# all satisfiable here precisely because deadsnakes python3.13 is installed
+# above. apt-get install ./file.deb resolves deps; `dpkg -i` would not.
+curl -fsSLO --retry 8 --retry-delay 5 --retry-all-errors "https://download.memgraph.com/memgraph/v${MEMGRAPH_VERSION}/debian-13/memgraph_${MEMGRAPH_VERSION}-1_amd64.deb"
+apt-get install -y "./memgraph_${MEMGRAPH_VERSION}-1_amd64.deb"
+rm -f "memgraph_${MEMGRAPH_VERSION}-1_amd64.deb"
+apt-get install -y libssl-dev python3-networkx
+EOF
+# RESOLUTE/UNVERIFIED: on 24.04 numpy and scipy came from python3-numpy /
+# python3-scipy, which target the SYSTEM interpreter - now 3.14, not the 3.13
+# that memgraph's query modules embed. Installed into 3.13 explicitly instead.
+# This is the one change in the port that was not end-to-end verified.
+RUN uv pip install --system --break-system-packages --python /usr/bin/python3.13 \
+        numpy scipy networkx
+EXPOSE 7687
+
+# Memgraph Lab. RESOLUTE: the standalone lab image keeps the bundle at
+# /home/lab, where memgraph-platform kept it at /lab.
+COPY --from=mg-lab /home/lab /lab
+EXPOSE 3000
+EXPOSE 7444
+
+# Memgraph test data
+COPY got.cypherl /tmp/got.cypherl
+COPY loaddata.sh /tmp/loaddata.sh
+
+######################
+# PROGRAMMING LANGUAGES
+######################
+
+# node.js
+ARG NODE_MAJOR
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked <<'EOF'
+set -euxo pipefail
+curl -fsSL --retry 8 --retry-delay 5 --retry-all-errors "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash -
+apt-get install -y nodejs
+EOF
+
+# Rust
+# BP: installed to /usr/local instead of ~/.cargo. Anything written to
+# /home/${DEV_USER} during the build is invisible at runtime - the dev-vol bind
+# mount covers it.
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked <<'EOF'
+set -euxo pipefail
+# BP: `cargo install` needs a linker; make that dependency explicit rather than
+# relying on a later layer having pulled build-essential in.
+apt-get update
+apt-get install -y build-essential
+curl --proto '=https' --tlsv1.2 -sSf --retry 8 --retry-delay 5 --retry-all-errors https://sh.rustup.rs \
+  | sh -s -- -y --no-modify-path --default-toolchain stable
+/usr/local/cargo/bin/cargo install typos-cli
+# world-writable so the dev user can `cargo install` / update the registry
+chmod -R a+w "${RUSTUP_HOME}" "${CARGO_HOME}"
+EOF
+
+######################
+# SERVICES
+######################
+
+# OpenSSH server. RESOLUTE: openssh 10.2p1 (24.04 had 9.6) - verified a
+# non-event for this image. `-o ListenAddress` is still accepted and sshd 10.x
+# starts the same way under supervisord.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked <<'EOF'
+set -euxo pipefail
+apt-get update
+apt-get install -y openssh-server
+# SSH login fix. Otherwise user is kicked off after login
+sed -i 's@session\s*required\s*pam_loginuid.so@session optional pam_loginuid.so@g' /etc/pam.d/sshd
+mkdir -p /run/sshd
+ssh-keygen -A
+EOF
+EXPOSE 22
+
+# VS Code
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked <<'EOF'
+set -euxo pipefail
+apt-get update
+apt-get install -y jq libatomic1 nano netcat-openbsd
+curl -fsSL --retry 8 --retry-delay 5 --retry-all-errors https://code-server.dev/install.sh | sh
+EOF
+EXPOSE 8004
+
+# JupyterLab
+# NOTE: still built on 3.12 (from deadsnakes), not the system 3.14 - a venv is
+# isolated either way, and 3.12 is the interpreter jupyterlab is best tested on.
+RUN <<'EOF'
+set -euxo pipefail
+python3.12 -m venv /opt/venv/jupyter
+/opt/venv/jupyter/bin/pip install --no-cache-dir --upgrade pip
+/opt/venv/jupyter/bin/pip install --no-cache-dir jupyterlab notebook
+for f in /opt/venv/jupyter/bin/jupyter*; do ln -sf "$f" /usr/local/bin/; done
+EOF
+COPY jupyter_lab_config.py /etc/jupyter/jupyter_lab_config.py
+EXPOSE 8002
+
+# Marimo
+# NOTE: into the system 3.13 (not a venv) on purpose - supervisord invokes it as
+# `python3.13 /usr/local/bin/marimo`, which only resolves if marimo is
+# importable by that interpreter.
+RUN uv pip install --system --break-system-packages --python /usr/bin/python3.13 marimo
+EXPOSE 8003
+
+# http index of running services
+COPY index.html /var/run/indexserver/index.html
+EXPOSE 80
+
+######################
+# EXTRA TOOLS
+######################
+
+# Nethack Learning Environment dependencies + cmake from Kitware
+ARG CMAKE_VERSION
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked <<'EOF'
+set -euxo pipefail
+apt-get update
+apt-get install -y build-essential autoconf libtool pkg-config flex bison libbz2-dev
+curl -fsSL --retry 8 --retry-delay 5 --retry-all-errors https://apt.kitware.com/keys/kitware-archive-latest.asc \
+  | gpg --dearmor -o /etc/apt/trusted.gpg.d/kitware.gpg
+chmod 0644 /etc/apt/trusted.gpg.d/kitware.gpg
+# RESOLUTE: noble -> resolute
+apt-add-repository -y 'deb https://apt.kitware.com/ubuntu/ resolute main'
+apt-get update
+apt-get install -y kitware-archive-keyring
+# RESOLUTE: cmake must be PINNED and HELD. Both Kitware's 4.4.3 and resolute's
+# own 4.2.3 hard-error on the Nethack Learning Environment; 3.31.12 gets it
+# through configure. The hold stops a later `apt-get upgrade` undoing this.
+apt-get install -y "cmake=${CMAKE_VERSION}" "cmake-data=${CMAKE_VERSION}"
+apt-mark hold cmake cmake-data
+cmake --version | head -1
+EOF
+
+# Extra tools
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked <<'EOF'
+set -euxo pipefail
+apt-get update
+# RESOLUTE: dnsutils -> bind9-dnsutils (dnsutils is now a transitional package).
+# libxext6 added for tilix/X11 forwarding.
+# RESOLUTE: imagemagick is now v7 (8:7.1.2.18) instead of v6. The package NAME
+# is unchanged and `convert` survives as an update-alternatives shim to
+# convert-im7.q16, so existing scripts keep working - but `identify` gains a
+# class field ("16-bit TrueColor sRGB" vs "16-bit sRGB"), which shifts
+# field-position parsing by one. There is NO imagemagick-6.q16 on resolute to
+# fall back to. Prefer `magick` in new scripting.
+apt-get install -y \
+    graphviz inetutils-telnet inetutils-ping fortune-mod fortunes-min \
+    rsync bsdmainutils lsof bind9-dnsutils unzip libxext6 \
+    clang clangd \
+    libvulkan1 mesa-vulkan-drivers \
+    imagemagick \
+    openjdk-17-jre-headless \
+    supervisor \
+    git-lfs \
+    tilix x11-utils x11-xserver-utils \
+    libnss3 libatk-bridge2.0-0t64 libatk1.0-0t64 libcups2t64 libdrm2 \
+    libgbm1 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
+    libasound2t64 fonts-liberation
+git lfs install --system
+# RESOLUTE: gh from the official repo, not the archive. resolute ships gh
+# 2.46.0 (tagged 2024-03-20), which is ~2 years stale.
+curl -fsSL --retry 8 --retry-delay 5 --retry-all-errors https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+  -o /usr/share/keyrings/githubcli.gpg
+chmod 0644 /usr/share/keyrings/githubcli.gpg
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/githubcli.gpg] https://cli.github.com/packages stable main" \
+  > /etc/apt/sources.list.d/github-cli.list
+apt-get update
+apt-get install -y gh
+gh --version | head -1
+EOF
+
+# poetry / hatch / pnpm
+# BP: all relocated out of $HOME for the bind-mount reason above.
+ENV PNPM_HOME=/usr/local/pnpm
+ARG PNPM_VERSION
+RUN <<'EOF'
+set -euxo pipefail
+# uv is installed with the interpreters above.
+# NOTE: poetry's installer runs under the SYSTEM python, now 3.14.
+curl -sSL --retry 8 --retry-delay 5 --retry-all-errors https://install.python-poetry.org | POETRY_HOME=/opt/poetry python3 -
+ln -sf /opt/poetry/bin/poetry /usr/local/bin/poetry
+uv tool install hatch
+curl -fsSL --retry 8 --retry-delay 5 --retry-all-errors https://get.pnpm.io/install.sh | env PNPM_VERSION="${PNPM_VERSION}" SHELL=/bin/bash sh -
+chmod -R a+w "${PNPM_HOME}"
+EOF
+
+# npm globals
+# RESOLUTE: PUPPETEER_CACHE_DIR must be set BEFORE this RUN. Without it
+# puppeteer caches Chromium under $HOME, which the dev-vol bind mount hides at
+# runtime - which is why mmdc could never render on 24.04 either. The chromium
+# shared libraries it needs are in the apt block above.
+ENV PUPPETEER_CACHE_DIR=/opt/puppeteer
+RUN <<'EOF'
+set -euxo pipefail
+npm install -g @mermaid-js/mermaid-cli @anthropic-ai/claude-code
+# The browser download during `npm install` is BEST-EFFORT: if it fails (this
+# host's DNS is flaky) npm still exits 0 and leaves an EMPTY /opt/puppeteer,
+# and mmdc then dies at runtime with "Could not find chrome-headless-shell".
+# Install the browsers explicitly and ASSERT the binaries exist, so a silent
+# download failure fails the build instead of shipping a broken mmdc.
+cd /usr/lib/node_modules/@mermaid-js/mermaid-cli
+for b in chrome chrome-headless-shell; do
+    npx --no-install puppeteer browsers install "$b"
+done
+cd /
+for b in chrome chrome-headless-shell; do
+    found=$(find /opt/puppeteer -type f -name "$b" | head -1)
+    [ -n "$found" ] || { echo "FATAL: puppeteer $b did not download into /opt/puppeteer"; exit 1; }
+    echo "puppeteer $b -> $found"
+done
+chmod -R a+rX /opt/puppeteer
+# Chromium cannot initialize its sandbox inside a container - it aborts with
+# "No usable sandbox!" because Ubuntu 23.10+ restricts unprivileged user
+# namespaces via AppArmor. Puppeteer has no way to pass browser flags on the
+# mmdc command line, so ship a config file and a wrapper that uses it.
+# /usr/local/bin precedes npm's /usr/bin on PATH, so the wrapper wins.
+cat > /etc/puppeteer-config.json <<'JSON'
+{ "args": ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"] }
+JSON
+chmod 0644 /etc/puppeteer-config.json
+real_mmdc=$(command -v mmdc)
+cat > /usr/local/bin/mmdc <<WRAP
+#!/bin/sh
+# Wrapper: supplies the puppeteer config that lets Chromium run in a container.
+# Override with -p/--puppeteerConfigFile if you need different browser flags.
+case " \$* " in
+    *" -p "*|*" --puppeteerConfigFile "*) exec ${real_mmdc} "\$@" ;;
+    *) exec ${real_mmdc} -p /etc/puppeteer-config.json "\$@" ;;
+esac
+WRAP
+chmod 0755 /usr/local/bin/mmdc
+EOF
+
+# SonarQube scanner
+ARG SONAR_SCANNER_VERSION
+RUN <<'EOF'
+set -euxo pipefail
+curl -fsSL --retry 8 --retry-delay 5 --retry-all-errors "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${SONAR_SCANNER_VERSION}-linux-x64.zip" -o /tmp/sonar-scanner.zip
+unzip -q /tmp/sonar-scanner.zip -d /opt
+mv "/opt/sonar-scanner-${SONAR_SCANNER_VERSION}-linux-x64" /opt/sonar-scanner
+rm -f /tmp/sonar-scanner.zip
+EOF
+# Use the system Java rather than sonar-scanner's bundled JRE.
+ENV SONAR_SCANNER_OPTS="-Dsonar.scanner.javaExePath=/usr/bin/java"
+
+######################
+# PATH
+######################
+# BP: one authoritative PATH. ~/.local/bin stays first to match the current
+# image (the mounted home's tools win), then the image-side tool dirs.
+ENV PATH="/home/${DEV_USER}/.local/bin:/usr/local/cargo/bin:${PNPM_HOME}:/opt/sonar-scanner/bin:/usr/local/cuda/bin:${PATH}"
+
+######################
+# EXTRA PORTS
+######################
+
+# for development purposes
+EXPOSE 8000-9999
+
+######################
+# SUPERVISORD
+######################
+RUN mkdir -p /var/log/supervisord
+COPY supervisord.base.conf /usr/local/etc/supervisord.base.conf
+COPY supervisord.conf /usr/local/etc/supervisord.conf
+EXPOSE 8001
+
+######################
+# MOUNT COMPATIBILITY HELPERS
+######################
+# The bind-mounted home was populated under 22.04, where /usr/bin/python3 was
+# 3.10. 136 scripts in ~/.local/bin (jupyter, poetry, pip3, ...) carry a literal
+# `#!/usr/bin/python3` shebang while their packages live in
+# ~/.local/lib/python3.10 - on resolute that shebang resolves to 3.14 and
+# site.getusersitepackages() becomes the empty ~/.local/lib/python3.14, so they
+# all fail. fix-home-shebangs repoints them at 3.10.
+#
+# ALSO: 16 of the ~26 venvs in the mount symlink bin/python at the UNVERSIONED
+# interpreter while their only libdir is lib/python3.10. Those activate without
+# error and then fail every import, because they run as 3.14 with nothing on
+# sys.path. This is pre-existing (they already become 3.12 on noble) but
+# 3.10 -> 3.14 makes it certain. fix-home-venvs repairs them; it is guarded to
+# leave uv-managed venvs and poetry's copied 3.10 ELF alone.
+COPY fix-home-shebangs /usr/local/bin/fix-home-shebangs
+COPY fix-home-venvs /usr/local/bin/fix-home-venvs
+COPY check-env /usr/local/bin/check-env
+RUN chmod 0755 /usr/local/bin/fix-home-shebangs /usr/local/bin/fix-home-venvs /usr/local/bin/check-env
+
+COPY root_bashrc /root/.bashrc
+
+# Run Server
+USER ${DEV_USER}
+CMD ["sudo", "-E", "supervisord", "-c", "/usr/local/etc/supervisord.conf"]

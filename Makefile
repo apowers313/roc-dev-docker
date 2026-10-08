@@ -1,4 +1,4 @@
-.PHONY: build fresh test-run stop start restart shell login publish check build-jammy fresh-jammy rollback verify nogpu
+.PHONY: build fresh test-run stop start restart shell login publish check build-jammy fresh-jammy rollback verify nogpu build-resolute fresh-resolute check-resolute shell-resolute start-resolute
 DOCKER=sudo docker
 SSL_DIR=/home/apowers/atoms-cert
 ########BUILD_EXTRA=--progress=plain
@@ -7,6 +7,9 @@ IMGNAME=apowers313/roc-dev
 VERSION=3.0.0
 # Previous Ubuntu 22.04 build, kept for rollback: ./Dockerfile.jammy
 JAMMY_VERSION=2.0.0
+# Experimental Ubuntu 26.04 build: ./Dockerfile.resolute
+RESOLUTE_VERSION=4.0.0-resolute
+COMPOSE_RESOLUTE=-f compose.yml -f compose.resolute.yml
 DEV_HOME=/home/apowers/dev
 COMPOSE_JAMMY=-f compose.yml -f compose.jammy.yml
 GITPKG=ghcr.io/$(IMGNAME)
@@ -50,6 +53,29 @@ fresh-jammy: build-jammy
 # Swap the running dev-env back to the 22.04 image.
 rollback: setup-network
 	$(DOCKER) compose $(COMPOSE_JAMMY) --env-file .env up -d --no-build dev-env
+
+########################################
+# Ubuntu 26.04 (resolute) - experimental
+########################################
+
+build-resolute:
+	$(DOCKER) build . -f Dockerfile.resolute $(BUILD_EXTRA) -t $(IMGNAME):$(RESOLUTE_VERSION)
+
+fresh-resolute: BUILD_EXTRA += --no-cache
+fresh-resolute: build-resolute
+
+# Smoke test the resolute image against the real ~/dev. Starts no services.
+check-resolute:
+	$(DOCKER) run --rm -it --gpus all --privileged $(DOCKER_VOLUMES) \
+		-v $(DEV_HOME):/home/apowers $(IMGNAME):$(RESOLUTE_VERSION) check-env
+
+shell-resolute:
+	$(DOCKER) run --rm -it --gpus all --privileged $(DOCKER_VOLUMES) \
+		-v $(DEV_HOME):/home/apowers $(IMGNAME):$(RESOLUTE_VERSION) bash
+
+# Swap the running dev-env onto the 26.04 image.
+start-resolute: setup-network
+	$(DOCKER) compose $(COMPOSE_RESOLUTE) --env-file .env up -d --no-build dev-env
 
 ########################################
 # Diagnostics

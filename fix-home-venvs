@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# Repair venvs in the bind-mounted home whose bin/python points at the
+# UNVERSIONED system interpreter while their only libdir is python3.10.
+#
+# Why: ~16 of the ~26 venvs under ~/ symlink bin/python at /usr/bin/python3 (or
+# a relative `python3`). On 22.04 that WAS 3.10, so they worked. On 24.04 they
+# silently became 3.12; on 26.04 they become 3.14. They still activate without
+# error and still show (.venv) in the prompt - and then fail every import,
+# because the interpreter is 3.14 while the only site-packages directory is
+# lib/python3.10. Their contents are real (19-42 packages each), so this is
+# recoverable, not disposable.
+#
+# Dry run by default. Pass --apply to write. Backups: *.pre-fix-venv
+#
+# THE GUARDS MATTER. A naive version of this script (skip only if
+# /usr/bin/pythonX.Y exists) was tested and did real damage:
+#   - it repointed SEVEN WORKING uv-managed venvs from uv's own cpython-3.13.1
+#     to /usr/bin/python3.13 (3.13.16), leaving a 3.13.16 binary running
+#     3.13.1's stdlib - which broke a numpy that works fine today;
+#   - it destroyed ~/.local/share/pypoetry/venv/bin/python, which is a REAL
+#     copied 5.9 MB CPython ELF, not a symlink, with no backup.
+# Hence: only bin/python symlinks literally named `python3` or `/usr/bin/python3`
+# are touched, and only when the interpreter version actually disagrees with the
+# libdir version.
+set -euo pipefail
+
+ROOT=${ROOT:-$HOME}
+MAXDEPTH=${MAXDEPTH:-6}
+APPLY=0
+[[ "${1:-}" == "--apply" ]] && APPLY=1
+
+changed=0 skipped=0 examined=0
+
+while IFS= read -r cfg; do
+    venv=$(dirname "$cfg")
+    py="$venv/bin/python"
+    examined=$((examined + 1))
+
+    # Which pythonX.Y does this venv actually carry?
+    libdir=$(find "$venv/lib" -maxdepth 1 -name 'python3.*' -printf '%f\n' 2>/dev/null | head -1)
+    [ -n "$libdir" ] || { skipped=$((skipped + 1)); continue; }
+    want=${libdir#python}                      # e.g. 3.10
+
+    [ -e "$py" ] || { skipped=$((skipped + 1)); continue; }
+
+    # GUARD 1: never touch a real binary - only a symlink. This is what saves
+    # poetry's copied CPython ELF.
+    if [ ! -L "$py" ]; then
+        echo "  skip (real binary, not a symlink): $py"
+        skipped=$((skipped + 1)); continue
+    fi
+
+    # GUARD 2: only repoint the UNVERSIONED system interpreter. A link to uv's
+    # managed cpython, or to an already-versioned /usr/bin/python3.11, is
+    # deliberate - leave it.
+    target=$(readlink "$py")
+    case "$target" in
+        python3|/usr/bin/python3) ;;
+        *) echo "  skip (deliberate target $target): $py"; skipped=$((skipped + 1)); continue ;;
+    esac
+
+    # GUARD 3: if the interpreter it resolves to ALREADY matches the libdir,
+    # there is nothing wrong. This is the check the naive version lacked.
+    have=$("$py" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "?")
+    if [ "$have" = "$want" ]; then
+        skipped=$((skipped + 1)); continue
+    fi
+
+    # The versioned interpreter this venv needs must exist before we point at it.
+    if [ ! -x "/usr/bin/python$want" ]; then
+        echo "  CANNOT FIX (no /usr/bin/python$want): $venv  (runs $have, needs $want)"
+        skipped=$((skipped + 1)); continue
+    fi
+
+    if (( APPLY )); then
+        cp -P "$py" "$py.pre-fix-venv"
+        ln -sfn "/usr/bin/python$want" "$py"
+        # Only rewrite pyvenv.cfg if it actually carries a base-executable line;
+        # a uv-style cfg has none and must not gain one.
+        if grep -q '^base-executable' "$cfg"; then
+            cp -p "$cfg" "$cfg.pre-fix-venv"
+            sed -i "s|^base-executable *=.*|base-executable = /usr/bin/python$want|" "$cfg"
+        fi
+        echo "  fixed  $venv  ($have -> $want)"
+    else
+        echo "  would fix  $venv  (runs $have, libdir $want, link -> $target)"
+    fi
+    changed=$((changed + 1))
+done < <(find "$ROOT" -maxdepth "$MAXDEPTH" -name pyvenv.cfg -not -path '*/node_modules/*' 2>/dev/null)
+
+echo
+echo "  examined $examined venv(s); $changed need repair; $skipped left alone"
+if (( changed == 0 )); then
+    echo "  nothing to do."
+elif (( APPLY )); then
+    echo "  backups: *.pre-fix-venv"
+    echo "  undo: for b in \$(find $ROOT -name '*.pre-fix-venv'); do mv \"\$b\" \"\${b%.pre-fix-venv}\"; done"
+else
+    echo "  re-run with --apply to write."
+fi

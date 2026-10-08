@@ -1,0 +1,15 @@
+# Override that runs the Ubuntu 26.04 (resolute) image.
+#
+#   docker compose -f compose.yml -f compose.resolute.yml --env-file .env \
+#       up -d --no-build dev-env
+#
+# Back to the 24.04 default = drop the -f. See also compose.jammy.yml (22.04).
+services:
+  dev-env:
+    image: apowers313/roc-dev:4.0.0-resolute
+    build:
+      context: .
+      dockerfile: Dockerfile.resolute
+      tags:
+        - "apowers313/roc-dev:4.0.0-resolute"
+        - "ghcr.io/apowers313/roc-dev:4.0.0-resolute"

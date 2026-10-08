@@ -37,10 +37,25 @@ check "home is writable"     bash -c 'touch ~/.check-env-probe && rm ~/.check-en
 check "home is the mount"    bash -c 'test -d ~/Projects && echo "~/Projects present"'
 
 echo "== interpreters =="
-for v in 3.10 3.11 3.12 3.13; do
+# The system python differs by release (24.04 -> 3.12, 26.04 -> 3.14), and
+# python3.14 only exists on 26.04 - so derive the expected set instead of
+# hardcoding one release's answer.
+UBUNTU_VER=$(. /etc/os-release 2>/dev/null && echo "${VERSION_ID:-unknown}")
+case "$UBUNTU_VER" in
+    26.04) WANT_PY="3.10 3.11 3.12 3.13 3.14"; SYS_PY=3.14 ;;
+    24.04) WANT_PY="3.10 3.11 3.12 3.13";      SYS_PY=3.12 ;;
+    *)     WANT_PY="3.10 3.11 3.12 3.13";      SYS_PY="" ;;
+esac
+echo "  (ubuntu $UBUNTU_VER; system python expected $SYS_PY)"
+for v in $WANT_PY; do
     check "python$v"         bash -c "python$v --version"
 done
-check "python3 -> 3.12"      bash -c 'python3 --version'
+check "python3 -> $SYS_PY"   bash -c '[ -z "$SYS_PY" ] && { python3 --version; exit 0; }; python3 --version | grep -q "$SYS_PY" && python3 --version'
+# A container whose system interpreter was corrupted by `ensurepip` prints a
+# dist-packages warning on every startup and loses distutils. Catch that here -
+# it is silent otherwise, and it breaks poetry and anything using setuptools.
+check "system py not corrupted" bash -c 'out=$(python3 -c "import setuptools, distutils" 2>&1); [ -z "$out" ] && echo "setuptools+distutils clean" || { echo "$out"; exit 1; }'
+check "python3 -m venv works" bash -c 'd=$(mktemp -d); python3 -m venv "$d/v" >/dev/null 2>&1 && "$d/v/bin/pip" --version; r=$?; rm -rf "$d"; exit $r'
 
 echo "== the 22.04 home carry-over =="
 check "~/.local 3.10 tree"   bash -c 'test -d ~/.local/lib/python3.10/site-packages && echo present'
@@ -76,7 +91,7 @@ check "marimo via 3.13"      bash -c 'python3.13 /usr/local/bin/marimo --version
 check "code-server"          code-server --version
 check "supervisord"          supervisord --version
 check "memgraph binary"      bash -c 'test -x /usr/lib/memgraph/memgraph && /usr/lib/memgraph/memgraph --version'
-check "memgraph lab bundle"  bash -c 'test -f /lab/dist-backend/server.js && echo present'
+check "memgraph lab bundle"  bash -c 'for f in /lab/dist-backend/index.js /lab/dist-backend/server.js; do [ -f "$f" ] && { echo "present ($(basename $f))"; exit 0; }; done; exit 1'
 check "mgconsole"            bash -c 'command -v mgconsole'
 
 echo
